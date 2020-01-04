@@ -1,6 +1,6 @@
 from time import time
 import cupy as cp
-from scipy.ndimage import zoom
+from cupyx.scipy.ndimage import zoom
 
 
 import pygame
@@ -9,14 +9,14 @@ from pygame.locals import *
 pygame.init()
 
 RESOLUTION = 100
-SAMPLES = 70
+SAMPLES = 400
 FOV = 1
-DEPTH = 15
-UPSAMPLE = 4
-disp = pygame.display.set_mode((RESOLUTION * UPSAMPLE, RESOLUTION * UPSAMPLE))
+DEPTH = 10
+UPSAMPLE_X, UPSAMPLE_Y = 2, 2
+disp = pygame.display.set_mode((RESOLUTION * UPSAMPLE_X, RESOLUTION * UPSAMPLE_Y))
 font = pygame.font.Font(pygame.font.get_default_font(), 12)
 
-decay = cp.linspace(.5, 1, SAMPLES)
+decay = cp.linspace(.99, 1, SAMPLES)
 sample_steps = decay.cumsum()
 sample_steps *= DEPTH / sample_steps[-1]
 sample_steps = sample_steps[cp.newaxis, cp.newaxis, ..., cp.newaxis]
@@ -68,7 +68,7 @@ def color_axes(x, y, z, _):
     return 5 * r, 5 * g, 5 * b
 
 
-def color_axes2(x, y, z):
+def color_axes2(x, y, z, _):
     fx = (1 + cp.sin(3 * x)) / 2
     r = ((cp.abs(y) < .5 *fx) & (cp.abs(z) < .5*fx) & (x > -.5))
     g = ((cp.abs(x) < .5) & (cp.abs(z) < .5) & (y > -.5))
@@ -175,9 +175,99 @@ def bandz(x,y,z,t):
 double_helix = add_swatches(helix, helix2)
 
 
+def bars(x, y, z, t):
+    w = 1
+    h = 1
+    R = 3
+    f = .125
+    r = (x % R < w) & (y % 4 > R - h) & (z / 2 + 1 < cp.sin(f * cp.ceil(x / R) * cp.ceil(y / R) * t / 100))
+    g = (x % R < w) & (y % 4 > R - h) & (z / 2 + 1 < cp.sin(f * cp.ceil(x / R) * cp.ceil(y / R) * t / 100))
+    b = (x % R < w) & (y % 4 > R - h) & (z / 2 + 1 < cp.sin(f * cp.ceil(x / R) * cp.ceil(y / R) * t / 100))
+    return r * 20, g * 3 - z / 10, b * 20
+
+
+def corny(x, y, z, t):
+    depth = 2
+    R = 3
+    mod = R / 3
+    r = cp.abs(z) < R
+    for _ in range(depth):
+        r &= (x % mod < mod / 3) | (x % mod > 2 * mod / 3)
+        r &= (y % mod < mod / 3) | (y % mod > 2 * mod / 3)
+        r &= (z % mod < mod / 3) | (z % mod > 2 * mod / 3)
+        mod /= 3
+    return 12*r + z * (z > R) / 20, 7*r + cp.abs(z) * (z < 0) / 20, 1*r + z * (z > R) / 20
+
+
+def mangus(x, y, z, t):
+    size = 9
+    iters = 2
+    r = (x > 0) & (y > 0) & (z > 0) & (x < size) & (y < size) & (z < size)
+    for _ in range(iters):
+        a = cp.floor((x / size * 3) % 3) == 1
+        b = cp.floor((y / size * 3) % 3) == 1
+        c = cp.floor((z / size * 3) % 3) == 1
+        r *= a * 1 + b * 1 + c * 1 < 1.5
+        size = size / 3 * (1 + cp.sin(t / 100))
+    return r * 10, r * 1, r
+
+
+def beach(x, y, z, t):
+    sun = 10 * (((x - 10)**2 + y**2 + (z - 5)**2) < 2)
+    sky = z > -1
+    water_freq = .1
+    sand = ((x < 0) & (z < cp.abs(x) / 100)) | ((x >= 0) & (z < -x**2 / 100))
+    water = (x > 2 * cp.sin(y / 4 + .25 * cp.sin(t * water_freq / 2))) * ~sand * (z < .15 * (cp.sin(t * water_freq) - 1))
+    depths = z / 100 * sand + z / 10 * water
+    return (
+        sand + depths + sky / 2 + sun,
+        sand + water + depths + sky / 20 + sun * .75,
+        water * 15 + depths * 5 + sky / 2
+    )
+
+
+def wave_tiles(x, y, z, t):
+    tile_size = 2
+    floor_x, floor_y = cp.floor(x / tile_size), cp.floor(y / tile_size)
+    red_tiles = ((floor_x + floor_y) % 2) < 1
+    tile_height = .5 * (cp.sin(floor_x + t / 10) + cp.sin(floor_y + t / 10))
+    tile_mask = (z < tile_height) & (z > tile_height - 1)
+    blue_tiles = ~red_tiles & tile_mask
+    red_tiles = red_tiles & tile_mask
+    return red_tiles * 5, 0 * red_tiles, blue_tiles * 5
+
+
+def ripple_tiles(x, y, z, t):
+    tile_size = 2
+    floor_x, floor_y = cp.floor(x / tile_size), cp.floor(y / tile_size)
+    red_tiles = ((floor_x + floor_y) % 2) < 1
+    r = cp.sqrt(floor_x**2 + floor_y**2)
+    tile_height = .5 * (cp.sin(r / 1 + t / 10) - 1)
+    tile_mask = (z < tile_height) & (z > tile_height - 1)
+    blue_tiles = ~red_tiles & tile_mask
+    red_tiles = red_tiles & tile_mask
+    return red_tiles * 5, 0 * red_tiles, blue_tiles * 5
+
+
+def chalice(x, y, z, t):
+    r = cp.sqrt(x**2 + y**2)
+    foot = (r < 2) & (z < .5 - r / 2) & (z > 0)
+    stem = (r < .15) & (z > 0) & (z < 3)
+    cup = (z > r**2 + 3) & (z < (r + .1)**2 + 3) & (r < 2)
+    liquid = (z > (r + .1)**2 + 3) & (z < r**2 * 0.5 + 5 + .1 * (cp.sin(r*2 * 4 + t / 4) + cp.sin(x + y + t / 3))) & (r < 2)
+    return liquid * 8, foot * 10 + stem * 10 + cup * 10, liquid * 4
+
+
+chalice_on_tiles = add_swatches(chalice, ripple_tiles)
+
+
+def upsample(x):
+    return zoom(x, (float(UPSAMPLE_X), float(UPSAMPLE_Y), 1), order=1)
+
+
 def display(a):
-    surf = pygame.surfarray.make_surface(zoom(
-        cp.asnumpy(cp.flip(cp.flip(cp.swapaxes(a, 0, 1), 1), 0)) * 255, (float(UPSAMPLE), float(UPSAMPLE), 1), order=1))
+    surf = pygame.surfarray.make_surface(cp.asnumpy(upsample(
+           (cp.flip(cp.flip(cp.swapaxes(a, 0, 1), 1), 0) * 255))))
     disp.blit(surf, (0, 0))
 
 
@@ -213,7 +303,7 @@ while True:
     if keys[pygame.K_w]:
         phi += 0.1
     if keys[pygame.K_a]:
-        theta += 0.1
+        theta += 1.1
     if keys[pygame.K_s]:
         phi -= 0.1
     if keys[pygame.K_d]:
@@ -223,7 +313,7 @@ while True:
     dir = cp.array([cp.sin(phi) * cp.cos(theta), cp.sin(phi) * cp.sin(theta), cp.cos(phi)])
     v = view_dirs(dir)
     p = get_paths(pos, v)
-    r = render(double_helix, p, frame)
+    r = render(chalice_on_tiles, p, frame)  # CHANGE FUNCTION HERE
     display(r)
     numpy_pos = cp.asnumpy(pos)
     text_surface = font.render(f'{1/(time() - now):.0f} FPS',
